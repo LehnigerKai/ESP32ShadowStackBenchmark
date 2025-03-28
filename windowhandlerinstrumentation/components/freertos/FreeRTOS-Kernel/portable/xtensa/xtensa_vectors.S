@@ -102,7 +102,7 @@
 #include "esp_private/panic_reason.h"
 #include "sdkconfig.h"
 #include "soc/soc.h"
-#include "window_instrumentation.S"
+#include "security.h"
 
 /*
   Define for workaround: pin no-cpu-affinity tasks to a cpu when fpu is used.
@@ -467,7 +467,7 @@ Double exceptions are not a normal occurrence. They indicate a bug of some kind.
 _DoubleExceptionVector:
 
     #if XCHAL_HAVE_DEBUG
-    break   1, 4                            /* unhandled double exception */
+     break   1, 4                            /* unhandled double exception */
     #endif
     movi    a0,PANIC_RSN_DOUBLEEXCEPTION
     wsr     a0,EXCCAUSE
@@ -909,35 +909,32 @@ _xt_coproc_exc:
 
     /* Get co-processor state save area of new owner thread. */
     call0   XT_RTOS_CP_STATE                /* a15 = new owner's save area */
-
-    #ifndef CONFIG_FREERTOS_FPU_IN_ISR
-    beqz    a15, .L_goto_invalid
+    #if CONFIG_FREERTOS_FPU_IN_ISR
+    beqz    a15, .L_skip_core_pin           /* CP used in ISR, skip task pinning */
+    #else
+    beqz    a15, .L_goto_invalid            /* not in a thread (invalid) */
     #endif
 
-    /*When FPU in ISR is enabled we could deal with zeroed a15 */
+#if configNUM_CORES > 1
+    /* CP operations are incompatible with unpinned tasks. Thus we pin the task
+    to the current running core. */
+    movi    a2, pxCurrentTCB
+    getcoreid a3                            /* a3 = current core ID */
+    addx4   a2, a3, a2
+    l32i    a2, a2, 0                       /* a2 = start of pxCurrentTCB[cpuid] */
+    addi    a2, a2, TASKTCB_XCOREID_OFFSET  /* a2 = &TCB.xCoreID */
+    s32i    a3, a2, 0                       /* TCB.xCoreID = current core ID */
+#endif // configNUM_CORES > 1
+
+#if CONFIG_FREERTOS_FPU_IN_ISR
+.L_skip_core_pin:
+#endif
 
     /* Enable the co-processor's bit in CPENABLE. */
     movi    a0, _xt_coproc_mask
     rsr     a4, CPENABLE                    /* a4 = CPENABLE */
     addx4   a0, a5, a0                      /* a0 = &_xt_coproc_mask[n] */
     l32i    a0, a0, 0                       /* a0 = (n << 16) | (1 << n) */
-
-    /* FPU operations are incompatible with non-pinned tasks. If we have a FPU operation
-       here, to keep the entire thing from crashing, it's better to pin the task to whatever
-       core we're running on now. */
-    movi    a2, pxCurrentTCB
-    getcoreid a3
-    addx4     a2,  a3, a2
-    l32i    a2, a2, 0                       /* a2 = start of pxCurrentTCB[cpuid] */
-    addi    a2, a2, TASKTCB_XCOREID_OFFSET  /* offset to xCoreID in tcb struct */
-    s32i    a3, a2, 0                       /* store current cpuid */
-
-    /* Grab correct xt_coproc_owner_sa for this core */
-    movi    a2, XCHAL_CP_MAX << 2
-    mull    a2, a2, a3                      /* multiply by current processor id */
-    movi    a3, _xt_coproc_owner_sa         /* a3 = base of owner array */
-    add     a3, a3, a2                      /* a3 = owner area needed for this processor */
-
     extui   a2, a0, 0, 16                   /* coprocessor bitmask portion */
     or      a4, a4, a2                      /* a4 = CPENABLE | (1 << n) */
     wsr     a4, CPENABLE
@@ -947,7 +944,11 @@ Keep loading _xt_coproc_owner_sa[n] atomic (=load once, then use that value
 everywhere): _xt_coproc_release assumes it works like this in order not to need
 locking.
 */
-
+    /* Grab correct xt_coproc_owner_sa for this core */
+    movi    a2, XCHAL_CP_MAX << 2
+    mull    a2, a2, a3                      /* multiply by current processor id */
+    movi    a3, _xt_coproc_owner_sa         /* a3 = base of owner array */
+    add     a3, a3, a2                      /* a3 = owner area needed for this processor */
 
     /* Get old coprocessor owner thread (save area ptr) and assign new one.  */
     addx4   a3,  a5, a3                      /* a3 = &_xt_coproc_owner_sa[n] */
@@ -1686,6 +1687,7 @@ _NMIExceptionVector:
 
 #endif  /* NMI */
 
+
 /*******************************************************************************
 
 WINDOW OVERFLOW AND UNDERFLOW EXCEPTION VECTORS AND ALLOCA EXCEPTION HANDLER
@@ -1716,11 +1718,10 @@ Registers a2 and up may contain return values.
 
 *******************************************************************************/
 
-
+#if XCHAL_HAVE_WINDOWED
 
     .section .WindowVectors.text, "ax"
-
-
+//#endif
 /*
 --------------------------------------------------------------------------------
 Window Overflow Exception for Call4.
@@ -1735,43 +1736,28 @@ On entry here:
         a5 is call[j+1]'s stack pointer.
 --------------------------------------------------------------------------------
 */
+#if OVERWRITE_WINDOW4
+	.extern __WindowOverflow4
+	.extern __WindowUnderflow4
+#endif
+#if defined(METHOD) && METHOD != METHOD_DEFAULT
+	.extern __WindowOverflow8
+	.extern __WindowUnderflow8
+#endif
 
     .org    0x0
     .global _WindowOverflow4
+
 _WindowOverflow4:
-#ifdef LARGE_WINDOW_HANDLERS
-	j _WindowOverflow4Large
+#if OVERWRITE_WINDOW4
+	j __WindowOverflow4
 #else
-#ifdef USE_SHADOW_STACK_DATA
-	j _X
-	shadow_stack_data
-_X:
-#endif
-	store_scratches a5
-	shadow_stack_store a5
-	stack_store a5
+    s32e    a0, a5, -16     /* save a0 to call[j+1]'s stack frame */
     s32e    a1, a5, -12     /* save a1 to call[j+1]'s stack frame */
-    store_non_scratches a5
-#ifdef USE_MPU_PROTECTION
-	j _overflow4_exit_hook
-#else
+    s32e    a2, a5,  -8     /* save a2 to call[j+1]'s stack frame */
+    s32e    a3, a5,  -4     /* save a3 to call[j+1]'s stack frame */
     rfwo                    /* rotates back to call[i] position */
 #endif
-#endif /* LARGE_WINDOW_HANDLERS */
-
-    .align  4
-    .global _xt_alloca_exc
-_xt_alloca_exc:
-
-    rsr     a0, WINDOWBASE  /* grab WINDOWBASE before rotw changes it */
-    rotw    -1              /* WINDOWBASE goes to a4, new a0-a3 are scratch */
-    rsr     a2, PS
-    extui   a3, a2, XCHAL_PS_OWB_SHIFT, XCHAL_PS_OWB_BITS
-    xor     a3, a3, a4      /* bits changed from old to current windowbase */
-    rsr     a4, EXCSAVE_1   /* restore original a0 (now in a4) */
-    slli    a3, a3, XCHAL_PS_OWB_SHIFT
-    j _xt_alloca_exc2
-
 
 /*
 --------------------------------------------------------------------------------
@@ -1788,23 +1774,25 @@ On entry here:
 --------------------------------------------------------------------------------
 */
 
+	.literal_position
+	.align 4
+	AES_START_REG: .word 0x3FF01000
+	.extern __window_counter
+	.literal __window_counter_ptr, __window_counter
+
     .org    0x40
     .global _WindowUnderflow4
 _WindowUnderflow4:
-#ifdef LARGE_WINDOW_HANDLERS
-	j _WindowUnderflow4Large
+#if OVERWRITE_WINDOW4
+	j __WindowUnderflow4
 #else
-    shadow_stack_load a5
-    stack_load a5
+    l32e    a0, a5, -16     /* restore a0 from call[i+1]'s stack frame */
     l32e    a1, a5, -12     /* restore a1 from call[i+1]'s stack frame */
     l32e    a2, a5,  -8     /* restore a2 from call[i+1]'s stack frame */
     l32e    a3, a5,  -4     /* restore a3 from call[i+1]'s stack frame */
-#ifdef USE_MPU_PROTECTION
-	j _underflow4_exit_hook
-#else
     rfwu
 #endif
-#endif /* LARGE_WINDOW_HANDLERS */
+
 /*
 --------------------------------------------------------------------------------
 Handle alloca exception generated by interruptee executing 'movsp'.
@@ -1817,17 +1805,27 @@ handler, so those 4 registers are available for scratch.
 The code is optimized to avoid unaligned branches and minimize cache misses.
 --------------------------------------------------------------------------------
 */
-
     .align  4
-_xt_alloca_exc2:
+    .global _xt_alloca_exc
+_xt_alloca_exc:
+
+    rsr     a0, WINDOWBASE  /* grab WINDOWBASE before rotw changes it */
+    rotw    -1              /* WINDOWBASE goes to a4, new a0-a3 are scratch */
+    rsr     a2, PS
+    extui   a3, a2, XCHAL_PS_OWB_SHIFT, XCHAL_PS_OWB_BITS
+    xor     a3, a3, a4      /* bits changed from old to current windowbase */
+    rsr     a4, EXCSAVE_1   /* restore original a0 (now in a4) */
+    slli    a3, a3, XCHAL_PS_OWB_SHIFT
     xor     a2, a2, a3      /* flip changed bits in old window base */
     wsr     a2, PS          /* update PS.OWB to new window base */
     rsync
+
     _bbci.l a4, 31, _WindowUnderflow4
     rotw    -1              /* original a0 goes to a8 */
     _bbci.l a8, 30, _WindowUnderflow8
     rotw    -1
     j               _WindowUnderflow12
+
 
 /*
 --------------------------------------------------------------------------------
@@ -1842,31 +1840,31 @@ On entry here:
         a8-a15 must be preserved;
         a9 is call[j+1]'s stack pointer.
 --------------------------------------------------------------------------------
-*/
 
+-----------------------------------------------------------------------------------------------
+The following changes are made in this file:
+	1. Added a code snippet below for encrypting return address before it is saved in call[j+1] stack frame(Done by encryption function defined in the file aes_encryption.S)
+	2. Declared a variable .aes_status for facilitating conditional jump to AES encryption function (Line 1767)
+-----------------------------------------------------------------------------------------------
+*/
     .org    0x80
     .global _WindowOverflow8
+
 _WindowOverflow8:
-#ifdef LARGE_WINDOW_HANDLERS
-	j _WindowOverflow8Large
-#else
-	store_scratches a9
-	shadow_stack_store a9
-	stack_store a9
-    l32e    a0, a1, -12     /* a0 <- call[j-1]'s sp
-                               (used to find end of call[j]'s frame) */
-    s32e    a1, a9, -12     /* save a1 to call[j+1]'s stack frame */
-    store_non_scratches a9
-    s32e    a4, a0, -32     /* save a4 to call[j]'s stack frame */
-    s32e    a5, a0, -28     /* save a5 to call[j]'s stack frame */
-    s32e    a6, a0, -24     /* save a6 to call[j]'s stack frame */
-    s32e    a7, a0, -20     /* save a7 to call[j]'s stack frame */
-#ifdef USE_MPU_PROTECTION
-	j _overflow8_exit_hook
-#else
-    rfwo                    /* rotates back to call[i] position */
+#if defined(METHOD) && METHOD != METHOD_DEFAULT
+	j __WindowOverflow8
 #endif
-#endif /* LARGE_WINDOW_HANDLERS */
+	s32e    a0, a9, -16     			// save a0 to call[j+1]'s stack frame
+	l32e    a0, a1, -12					// a0 <- call[i-1]'s sp
+    s32e    a1, a9, -12     			// save a1 to call[j+1]'s stack frame
+    s32e    a2, a9,  -8     			// save a2 to call[j+1]'s stack frame
+ 	s32e    a3, a9,  -4     			// save a3 to call[j+1]'s stack frame
+    s32e    a4, a0, -32     			// save a4 to call[j]'s stack frame
+ 	s32e    a5, a0, -28     			// save a5 to call[j]'s stack frame
+	s32e    a6, a0, -24     			// save a6 to call[j]'s stack frame
+	s32e    a7, a0, -20     			// save a7 to call[j]'s stack frame
+	rfwo								// rotates back to call[i] position
+
 /*
 --------------------------------------------------------------------------------
 Window Underflow Exception for Call8
@@ -1885,26 +1883,21 @@ On entry here:
     .org    0xC0
     .global _WindowUnderflow8
 _WindowUnderflow8:
-#ifdef LARGE_WINDOW_HANDLERS
-	j _WindowUnderflow8Large
-#else
-    shadow_stack_load a9
-    stack_load a9
-    l32e    a1, a9, -12     /* restore a1 from call[i+1]'s stack frame */
-    l32e    a2, a9,  -8     /* restore a2 from call[i+1]'s stack frame */
-    l32e    a7, a1, -12     /* a7 <- call[i-1]'s sp
-                               (used to find end of call[i]'s frame) */
-    l32e    a3, a9,  -4     /* restore a3 from call[i+1]'s stack frame */
-    l32e    a4, a7, -32     /* restore a4 from call[i]'s stack frame */
-    l32e    a5, a7, -28     /* restore a5 from call[i]'s stack frame */
-    l32e    a6, a7, -24     /* restore a6 from call[i]'s stack frame */
-    l32e    a7, a7, -20     /* restore a7 from call[i]'s stack frame */
-#ifdef USE_MPU_PROTECTION
-	j _underflow8_exit_hook
-#else
-    rfwu
+#if defined(METHOD) && METHOD != METHOD_DEFAULT
+	j __WindowUnderflow8
 #endif
-#endif /* LARGE_WINDOW_HANDLERS */
+    l32e    a0, a9, -16     				// restore a0 from call[i+1]'s stack frame
+	l32e    a1, a9, -12     				// restore a1 from call[i+1]'s stack frame
+    l32e    a2, a9,  -8     				// restore a2 from call[i+1]'s stack frame
+    l32e	a7, a1, -12						// a7 <- call[i-1]'s sp
+    l32e    a3, a9,  -4     				// restore a3 from call[i+1]'s stack frame
+    l32e    a4, a7, -32     				// restore a4 from call[i]'s stack frame
+    l32e    a5, a7, -28     				// restore a5 from call[i]'s stack frame
+    l32e    a6, a7, -24     				// restore a6 from call[i]'s stack frame
+    l32e    a7, a7, -20     				// restore a7 from call[i]'s stack frame
+
+    rfwu
+
 /*
 --------------------------------------------------------------------------------
 Window Overflow Exception for Call12
@@ -1923,16 +1916,13 @@ On entry here:
     .org    0x100
     .global _WindowOverflow12
 _WindowOverflow12:
-#ifdef LARGE_WINDOW_HANDLERS
-	j _WindowOverflow12Large
-#else
-	store_scratches a13
-	shadow_stack_store a13
-	stack_store a13
+
+    s32e    a0,  a13, -16   /* save a0 to call[j+1]'s stack frame */
     l32e    a0,  a1,  -12   /* a0 <- call[j-1]'s sp
                                (used to find end of call[j]'s frame) */
     s32e    a1,  a13, -12   /* save a1 to call[j+1]'s stack frame */
-    store_non_scratches a13
+    s32e    a2,  a13,  -8   /* save a2 to call[j+1]'s stack frame */
+    s32e    a3,  a13,  -4   /* save a3 to call[j+1]'s stack frame */
     s32e    a4,  a0,  -48   /* save a4 to end of call[j]'s stack frame */
     s32e    a5,  a0,  -44   /* save a5 to end of call[j]'s stack frame */
     s32e    a6,  a0,  -40   /* save a6 to end of call[j]'s stack frame */
@@ -1942,7 +1932,6 @@ _WindowOverflow12:
     s32e    a10, a0,  -24   /* save a10 to end of call[j]'s stack frame */
     s32e    a11, a0,  -20   /* save a11 to end of call[j]'s stack frame */
     rfwo                    /* rotates back to call[i] position */
-#endif /* LARGE_WINDOW_HANDLERS */
 
 /*
 --------------------------------------------------------------------------------
@@ -1962,11 +1951,8 @@ On entry here:
     .org 0x140
     .global _WindowUnderflow12
 _WindowUnderflow12:
-#ifdef LARGE_WINDOW_HANDLERS
-	j _WindowUnderflow12Large
-#else
-    shadow_stack_load a13
-    stack_load a13
+
+    l32e    a0,  a13, -16   /* restore a0 from call[i+1]'s stack frame */
     l32e    a1,  a13, -12   /* restore a1 from call[i+1]'s stack frame */
     l32e    a2,  a13,  -8   /* restore a2 from call[i+1]'s stack frame */
     l32e    a11, a1,  -12   /* a11 <- call[i-1]'s sp
@@ -1981,7 +1967,8 @@ _WindowUnderflow12:
     l32e    a10, a11, -24   /* restore a10 from end of call[i]'s stack frame */
     l32e    a11, a11, -20   /* restore a11 from end of call[i]'s stack frame */
     rfwu
-#endif /* LARGE_WINDOW_HANDLERS */
+
+#endif /* XCHAL_HAVE_WINDOWED */
 
     .section    .UserEnter.text, "ax"
     .global     call_user_start
@@ -1989,104 +1976,6 @@ _WindowUnderflow12:
     .align      4
     .literal_position
 
-#ifdef LARGE_WINDOW_HANDLERS
 
-	shadow_stack_data
 
-_WindowOverflow4Large:
-	store_scratches a5
-	shadow_stack_store a5
-	stack_store a5
-    s32e    a1, a5, -12     /* save a1 to call[j+1]'s stack frame */
-    store_non_scratches a5
-#ifdef USE_MPU_PROTECTION
-	j _overflow4_exit_hook
-#else
-    rfwo                    /* rotates back to call[i] position */
-#endif
 
-_WindowUnderflow4Large:
-    shadow_stack_load a5
-    stack_load a5
-    l32e    a1, a5, -12     /* restore a1 from call[i+1]'s stack frame */
-    l32e    a2, a5,  -8     /* restore a2 from call[i+1]'s stack frame */
-    l32e    a3, a5,  -4     /* restore a3 from call[i+1]'s stack frame */
-#ifdef USE_MPU_PROTECTION
-	j _underflow4_exit_hook
-#else
-    rfwu
-#endif
-
-_WindowOverflow8Large:
-	store_scratches a9
-	shadow_stack_store a9
-	stack_store a9
-    l32e    a0, a1, -12     /* a0 <- call[j-1]'s sp
-                               (used to find end of call[j]'s frame) */
-    s32e    a1, a9, -12     /* save a1 to call[j+1]'s stack frame */
-    store_non_scratches a9
-    s32e    a4, a0, -32     /* save a4 to call[j]'s stack frame */
-    s32e    a5, a0, -28     /* save a5 to call[j]'s stack frame */
-    s32e    a6, a0, -24     /* save a6 to call[j]'s stack frame */
-    s32e    a7, a0, -20     /* save a7 to call[j]'s stack frame */
-#ifdef USE_MPU_PROTECTION
-	j _overflow8_exit_hook
-#else
-    rfwo                    /* rotates back to call[i] position */
-#endif
-
-_WindowUnderflow8Large:
-    shadow_stack_load a9
-    stack_load a9
-    l32e    a1, a9, -12     /* restore a1 from call[i+1]'s stack frame */
-    l32e    a2, a9,  -8     /* restore a2 from call[i+1]'s stack frame */
-    l32e    a7, a1, -12     /* a7 <- call[i-1]'s sp
-                               (used to find end of call[i]'s frame) */
-    l32e    a3, a9,  -4     /* restore a3 from call[i+1]'s stack frame */
-    l32e    a4, a7, -32     /* restore a4 from call[i]'s stack frame */
-    l32e    a5, a7, -28     /* restore a5 from call[i]'s stack frame */
-    l32e    a6, a7, -24     /* restore a6 from call[i]'s stack frame */
-    l32e    a7, a7, -20     /* restore a7 from call[i]'s stack frame */
-#ifdef USE_MPU_PROTECTION
-	j _underflow8_exit_hook
-#else
-    rfwu
-#endif
-
-_WindowOverflow12Large:
-	store_scratches a13
-	shadow_stack_store a13
-	stack_store a13
-    l32e    a0,  a1,  -12   /* a0 <- call[j-1]'s sp
-                               (used to find end of call[j]'s frame) */
-    s32e    a1,  a13, -12   /* save a1 to call[j+1]'s stack frame */
-    store_non_scratches a13
-    s32e    a4,  a0,  -48   /* save a4 to end of call[j]'s stack frame */
-    s32e    a5,  a0,  -44   /* save a5 to end of call[j]'s stack frame */
-    s32e    a6,  a0,  -40   /* save a6 to end of call[j]'s stack frame */
-    s32e    a7,  a0,  -36   /* save a7 to end of call[j]'s stack frame */
-    s32e    a8,  a0,  -32   /* save a8 to end of call[j]'s stack frame */
-    s32e    a9,  a0,  -28   /* save a9 to end of call[j]'s stack frame */
-    s32e    a10, a0,  -24   /* save a10 to end of call[j]'s stack frame */
-    s32e    a11, a0,  -20   /* save a11 to end of call[j]'s stack frame */
-    rfwo                    /* rotates back to call[i] position */
-
-_WindowUnderflow12Large:
-    shadow_stack_load a13
-    stack_load a13
-    l32e    a1,  a13, -12   /* restore a1 from call[i+1]'s stack frame */
-    l32e    a2,  a13,  -8   /* restore a2 from call[i+1]'s stack frame */
-    l32e    a11, a1,  -12   /* a11 <- call[i-1]'s sp
-                               (used to find end of call[i]'s frame) */
-    l32e    a3,  a13,  -4   /* restore a3 from call[i+1]'s stack frame */
-    l32e    a4,  a11, -48   /* restore a4 from end of call[i]'s stack frame */
-    l32e    a5,  a11, -44   /* restore a5 from end of call[i]'s stack frame */
-    l32e    a6,  a11, -40   /* restore a6 from end of call[i]'s stack frame */
-    l32e    a7,  a11, -36   /* restore a7 from end of call[i]'s stack frame */
-    l32e    a8,  a11, -32   /* restore a8 from end of call[i]'s stack frame */
-    l32e    a9,  a11, -28   /* restore a9 from end of call[i]'s stack frame */
-    l32e    a10, a11, -24   /* restore a10 from end of call[i]'s stack frame */
-    l32e    a11, a11, -20   /* restore a11 from end of call[i]'s stack frame */
-    rfwu
-
-#endif /* LARGE_WINDOW_HANDLERS */

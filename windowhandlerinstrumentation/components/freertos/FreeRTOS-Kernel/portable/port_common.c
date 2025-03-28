@@ -20,6 +20,8 @@
 #include "sdkconfig.h"
 #include "esp_freertos_hooks.h"
 
+
+
 #if CONFIG_SPIRAM
 #include "esp_psram.h"
 #include "esp_private/esp_psram_extram.h"
@@ -57,6 +59,7 @@ extern void app_main(void);
 
 void esp_startup_start_app_common(void)
 {
+
 #if CONFIG_ESP_INT_WDT
     esp_int_wdt_init();
     //Initialize the interrupt watch dog for CPU0.
@@ -87,6 +90,7 @@ static bool other_cpu_startup_idle_hook_cb(void)
 
 static void main_task(void* args)
 {
+
 #if !CONFIG_FREERTOS_UNICORE
     // Wait for FreeRTOS initialization to finish on other core, before replacing its startup stack
     esp_register_freertos_idle_hook_for_cpu(other_cpu_startup_idle_hook_cb, !xPortGetCoreID());
@@ -111,7 +115,7 @@ static void main_task(void* args)
 #endif
 
     //Initialize TWDT if configured to do so
-#if CONFIG_ESP_TASK_WDT
+#if CONFIG_ESP_TASK_WDT_INIT
     esp_task_wdt_config_t twdt_config = {
         .timeout_ms = CONFIG_ESP_TASK_WDT_TIMEOUT_S * 1000,
         .idle_core_mask = 0,
@@ -127,6 +131,7 @@ static void main_task(void* args)
 #endif
     ESP_ERROR_CHECK(esp_task_wdt_init(&twdt_config));
 #endif // CONFIG_ESP_TASK_WDT
+
 
     app_main();
     vTaskDelete(NULL);

@@ -21,6 +21,8 @@ Original Author: Shay Gal-on
 */
 #include "sdkconfig.h"
 #include "coremark.h"
+#include "freertos/security.h"
+#include "esp_task.h"
 
 /* Function: iterate
 	Run the benchmark for a specified number of iterations.
@@ -63,6 +65,11 @@ ee_s32 get_seed_args(int i, int argc, char *argv[]);
 #else /* via function or volatile */
 ee_s32 get_seed_32(int i);
 #define get_seed(x) (ee_s16)get_seed_32(x)
+#endif
+
+unsigned int __window_counter = 0;
+#if MEASURE_SHADOW_STACK_SIZE
+extern uint32_t* main_stack_ptr;
 #endif
 
 #if (MEM_METHOD==MEM_STATIC)
@@ -214,6 +221,9 @@ MAIN_RETURN_TYPE main(int argc, char *argv[]) {
 	}
 	/* perform actual benchmark */
 	start_time();
+#if METHOD == METHOD_COUNT
+	__window_counter = 0;
+#endif
 #if (MULTITHREAD>1)
 	if (default_num_contexts>MULTITHREAD) {
 		default_num_contexts=MULTITHREAD;
@@ -228,6 +238,9 @@ MAIN_RETURN_TYPE main(int argc, char *argv[]) {
 	}
 #else
 	iterate(&results[0]);
+#endif
+#if METHOD == METHOD_COUNT
+	const uint32_t c = __window_counter;
 #endif
 	stop_time();
 	total_time=get_time();
@@ -286,7 +299,15 @@ MAIN_RETURN_TYPE main(int argc, char *argv[]) {
 	total_errors+=check_data_types();
 	/* and report results */
 	ee_printf("CoreMark Size    : %lu\n", (long unsigned) results[0].size);
+#if METHOD == METHOD_COUNT
+	ee_printf("Total ticks      : %lu\n", c);
+#elif MEASURE_SHADOW_STACK_SIZE
+	uint32_t unused = 5;
+	while(main_stack_ptr[5] == main_stack_ptr[++unused]);
+	ee_printf("Total ticks      : %lu\n", (ESP_TASK_MAIN_STACK - unused * 4));
+#else
 	ee_printf("Total ticks      : %lu\n", (long unsigned) total_time);
+#endif
 #if HAS_FLOAT
 	ee_printf("Total time (secs): %f\n",time_in_secs(total_time));
 	if (time_in_secs(total_time) > 0)

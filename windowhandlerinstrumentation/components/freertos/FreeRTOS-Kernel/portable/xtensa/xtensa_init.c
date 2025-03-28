@@ -48,6 +48,7 @@
 
 unsigned _xt_tick_divisor = 0;  /* cached number of cycles per tick */
 
+
 void _xt_tick_divisor_init(void)
 {
     _xt_tick_divisor = esp_clk_cpu_freq() / XT_TICK_PER_SEC;

@@ -30,9 +30,15 @@
 
 #include "xtensa_rtos.h"
 #include "sdkconfig.h"
+#include "security.h"
+
 
 #define TOPOFSTACK_OFFS                 0x00    /* StackType_t *pxTopOfStack */
 #define CP_TOPOFSTACK_OFFS              0x04    /* xMPU_SETTINGS.coproc_area */
+#ifdef STORAGE
+#define STATE0_OFFS						0x08    /* uint32_t state0 */
+#define STATE1_OFFS						0x0c	/* uint32_t state1 */
+#endif
 
 .extern pxCurrentTCB
 
@@ -40,6 +46,13 @@
     .global     port_switch_flag    //Required by sysview_tracing build
     .text
 
+#if defined(STORAGE) && STORAGE == STORAGE_MEMORY
+.extern state0
+.extern state1
+.literal_position
+.literal state0_ptr, state0
+.literal state1_ptr, state1
+#endif
 /*
 *******************************************************************************
 * _frxt_setup_switch
@@ -94,7 +107,7 @@ _frxt_int_enter:
     call0   _xt_context_save
 
     /*
-    Save interrupted task's SP in TCB only if not nesting.
+    Save interrupted task's SP in  TCB only if not nesting.
     Manage nesting directly rather than call the generic IntEnter()
     (in windowed ABI we can't call a C function here anyway because PS.EXCM is still set).
     */
@@ -116,6 +129,23 @@ _frxt_int_enter:
     beqz    a2,  1f
     s32i    a1,  a2, TOPOFSTACK_OFFS    /* pxCurrentTCB->pxTopOfStack = SP */
     movi    a1,  port_IntStack+configISR_STACK_SIZE   /* a1 = top of intr stack for CPU 0  */
+#ifdef STORAGE
+#if STORAGE == STORAGE_MEMORY
+	l32r	a7, state0_ptr
+	addx4	a7, a4, a7
+	movi	a6,  0
+	s32i	a6, a7, 0
+	l32r	a7, state1_ptr
+	addx4	a7, a4, a7
+	s32i	a6, a7, 0
+#elif STORAGE == STORAGE_REG
+	movi	a6,	 0
+	wsr		a6, misc3
+	wsr		a6, misc2
+#else
+#error "Undefined value for STORAGE"
+#endif
+#endif
     movi    a2,  configISR_STACK_SIZE   /* add configISR_STACK_SIZE * cpu_num to arrive at top of stack for cpu_num */
     mull    a2,  a4, a2
     add     a1,  a1, a2                 /* for current proc */
@@ -189,6 +219,23 @@ _frxt_int_exit:
     beqz    a2,  1f                     /* no task ? go to dispatcher      */
     l32i    a1,  a2, TOPOFSTACK_OFFS    /* SP = pxCurrentTCB->pxTopOfStack */
 
+#ifdef STORAGE
+	l32i	a5, a2, STATE0_OFFS
+	l32i	a6, a2, STATE1_OFFS
+#if STORAGE == STORAGE_MEMORY
+	l32r	a7, state0_ptr
+	addx4	a7, a4, a7
+	s32i	a5, a7,  0
+	l32r	a7, state1_ptr
+	addx4	a7, a4, a7
+	s32i	a6, a7,  0
+#elif STORAGE == STORAGE_REG
+	wsr		a5, misc3
+	wsr		a6, misc2
+#else
+#error "Undefined value for STORAGE"
+#endif
+#endif
     movi    a2,  port_switch_flag       /* address of switch flag          */
     addx4   a2,  a4, a2                 /* point to flag for this cpu      */
     l32i    a3,  a2, 0                  /* a3 = port_switch_flag           */
@@ -409,6 +456,7 @@ _frxt_tick_timer_init:
     .align  4
 _frxt_dispatch:
 
+
     #ifdef __XTENSA_CALL0_ABI__
     call0   vTaskSwitchContext  // Get next TCB to resume
     movi    a2, pxCurrentTCB
@@ -423,6 +471,25 @@ _frxt_dispatch:
     l32i    a3,  a2, 0
     l32i    sp,  a3, TOPOFSTACK_OFFS     /* SP = next_TCB->pxTopOfStack;  */
     s32i    a3,  a2, 0
+
+#ifdef STORAGE
+	l32i	a5,  a3, STATE0_OFFS
+	l32i	a6,  a3, STATE1_OFFS
+#if STORAGE == STORAGE_MEMORY
+	getcoreid a3
+	l32r	a4, state0_ptr
+	addx4	a4,  a3, a4
+	s32i	a5,  a4,  0
+	l32r	a4, state1_ptr
+	addx4	a4,  a3, a4
+	s32i	a6,  a4,  0
+#elif STORAGE == STORAGE_REG
+	wsr		a5, misc3
+	wsr		a6, misc2
+#else
+#error "Undefined value for STORAGE"
+#endif
+#endif
 
     /* Determine the type of stack frame. */
     l32i    a2,  sp, XT_STK_EXIT        /* exit dispatcher or solicited flag */

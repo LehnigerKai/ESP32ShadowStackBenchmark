@@ -79,36 +79,21 @@ else()
             "FreeRTOS-Kernel/portable/xtensa/xtensa_overlay_os_hook.c"
             "FreeRTOS-Kernel/portable/xtensa/xtensa_vector_defaults.S"
             "FreeRTOS-Kernel/portable/xtensa/xtensa_vectors.S"
-            "FreeRTOS-Kernel/portable/xtensa/window_hooks.S")
+            "FreeRTOS-Kernel/portable/xtensa/window_handlers.S")
 
         set(include_dirs
             FreeRTOS-Kernel/include
             esp_additions/include/freertos          # For files with #include "FreeRTOSConfig.h"
             FreeRTOS-Kernel/portable/xtensa/include # For arch-specific FreeRTOSConfig_arch.h in portable/<arch>/include
             esp_additions/include)                  # For files with #include "freertos/FreeRTOSConfig.h"
-
+		set_source_files_properties("FreeRTOS-Kernel/portable/xtensa/xtensa_vectors.S" PROPERTIES COMPILE_FLAGS -mtext-section-literals)   
+		set_source_files_properties("FreeRTOS-Kernel/portable/xtensa/window_handlers.S" PROPERTIES COMPILE_FLAGS -mtext-section-literals)   
+		
         set(private_include_dirs
             FreeRTOS-Kernel/portable/xtensa/include/freertos
             FreeRTOS-Kernel/portable/xtensa
             FreeRTOS-Kernel/portable/priv_include
             .)
-         
-        set_source_files_properties("FreeRTOS-Kernel/portable/xtensa/xtensa_vectors.S" PROPERTIES COMPILE_FLAGS -mtext-section-literals)          
-        #add_compile_definitions(SHADOW_STACK_ACCESS=NONE)
-        #add_compile_definitions(SHADOW_STACK_ACCESS=CONSTANT)
-        #add_compile_definitions(SHADOW_STACK_ACCESS=LITERAL_DIRECT)
-        #add_compile_definitions(SHADOW_STACK_ACCESS=LITERAL_INDIRECT)
-        #add_compile_definitions(SHADOW_STACK_ACCESS=COMPRESSED_DIRECT)
-        #add_compile_definitions(SHADOW_STACK_ACCESS=COMPRESSED_INDIRECT)
-        #add_compile_definitions(STACK_ACCESS=NONE)
-        #add_compile_definitions(STACK_ACCESS=REGULAR)
-        #add_compile_definitions(STACK_ACCESS=LOAD_AND_COMPARE)
-        
-        add_compile_definitions(SHADOW_STACK_ACCESS=${SHADOW_STACK_ACCESS})
-        add_compile_definitions(STACK_ACCESS=${STACK_ACCESS})
-        if(USE_MPU_PROTECTION)
-	        add_compile_definitions(USE_MPU_PROTECTION)
-		endif()
 
     elseif(CONFIG_IDF_TARGET_ARCH_RISCV)
         set(srcs

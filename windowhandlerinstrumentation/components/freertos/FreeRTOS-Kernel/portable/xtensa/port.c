@@ -76,9 +76,19 @@
 #include "port_systick.h"
 #include "esp_cpu.h"
 #include "esp_memory_utils.h"
+#include "esp_chip_info.h"
+
+#include "soc/dport_reg.h"
+#include "soc/dport_access.h"
+#include "xtensa_rtos.h"
+#include "soc/soc.h"
+#include "esp_types.h"
+
+
+
+_Static_assert(portBYTE_ALIGNMENT == 16, "portBYTE_ALIGNMENT must be set to 16");
 
 _Static_assert(tskNO_AFFINITY == CONFIG_FREERTOS_NO_AFFINITY, "incorrect tskNO_AFFINITY value");
-
 
 /* ---------------------------------------------------- Variables ------------------------------------------------------
  *
@@ -190,7 +200,6 @@ StackType_t *pxPortInitialiseStack( StackType_t *pxTopOfStack, TaskFunction_t px
     for (tp = sp; tp <= pxTopOfStack; ++tp) {
         *tp = 0;
     }
-
     frame = (XtExcFrame *) sp;
 
     /* Explicitly initialize certain saved registers */
@@ -260,7 +269,7 @@ StackType_t *pxPortInitialiseStack( StackType_t *pxTopOfStack, TaskFunction_t px
     p[1] = 0;
     p[2] = (((uint32_t) p) + 12 + XCHAL_TOTAL_SA_ALIGN - 1) & -XCHAL_TOTAL_SA_ALIGN;
 #endif /* XCHAL_CP_NUM */
-
+    configASSERT(((uint32_t) sp & portBYTE_ALIGNMENT_MASK) == 0);
     return sp;
 }
 
@@ -477,7 +486,11 @@ void esp_startup_start_app_other_cores(void)
 }
 #endif // !CONFIG_FREERTOS_UNICORE
 
+//extern void aes_registers();
+
+
 extern void esp_startup_start_app_common(void);
+
 
 void esp_startup_start_app(void)
 {
@@ -488,7 +501,6 @@ void esp_startup_start_app(void)
 #endif
 
     esp_startup_start_app_common();
-
     ESP_LOGI(TAG, "Starting scheduler on PRO CPU.");
     vTaskStartScheduler();
 }

@@ -41,7 +41,7 @@ float arr[20] = {
 };
 
 
-float select(unsigned long k, unsigned long n)
+static float select(unsigned long k, unsigned long n)
 {
 	unsigned long i,ir,j,l,mid;
 	float a,temp;

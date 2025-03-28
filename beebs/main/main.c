@@ -25,27 +25,45 @@
 
 #include "support.h"
 #include "esp_timer.h"
+#include "freertos/security.h"
+#include "esp_task.h"
+
+#include <stdint.h>
+
+#if MEASURE_SHADOW_STACK_SIZE
+extern uint32_t* main_stack_ptr;
+#endif
 
 extern int initialise_benchmark (void);
 
-// used by indirect literals
-unsigned int __shadow_stack_offset = 0;
-unsigned int __stack_base = 0;
-unsigned int __shadow_stack_base = 0;
+unsigned int __window_counter = 0;	// global counter for window overflows
 
 void app_main (){
   int i;
 
   initialise_benchmark ();
-  int64_t start = esp_timer_get_time();
-
+  __window_counter = 0;
+  __attribute__((unused)) int64_t start = esp_timer_get_time();
   for (i = 0; i < REPEAT_FACTOR; i++)
     {
       initialise_benchmark ();
       benchmark ();
     }
-
-  int64_t stop = esp_timer_get_time();
-
+  __attribute__((unused)) int64_t stop = esp_timer_get_time();
+#if METHOD == METHOD_COUNT
+  printf("Result: %u\n", __window_counter);
+#elif  MEASURE_SHADOW_STACK_SIZE
+  // simply count how many words still have default value
+  int unused = 5; // skip first bytes, they contain a canary
+  while(main_stack_ptr[5] == main_stack_ptr[++unused]);
+//#define PRINT_SHADOW_STACK
+#ifdef PRINT_SHADOW_STACK
+  int printer = unused;
+  while(printer < ESP_TASK_MAIN_STACK/4 + 2) printf("%lx\n", main_stack_ptr[printer++ - 1]);
+#endif
+  // size of total stack - free bytes = total used shadow stack size
+  printf("Result: %d\n", ESP_TASK_MAIN_STACK - unused * 4);
+#else
   printf("Result: %lld\n", stop-start);
+#endif
 }

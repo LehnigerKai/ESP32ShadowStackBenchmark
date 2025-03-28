@@ -1,0 +1,40 @@
+/* Configuration parameters and their possible values.
+ * Use STORAGE to select how task state should be stored
+ * and METHOD to select the protection method.
+ */
+#ifndef SECURITY_H
+#define SECURITY_H
+
+#define STORAGE_MEMORY			0
+#define STORAGE_REG				1
+
+#ifndef STORAGE
+#define STORAGE STORAGE_MEMORY
+#endif
+
+#define METHOD_DEFAULT 			0
+#define METHOD_SHADOW			1
+#define METHOD_AREA				2
+#define METHOD_COMPRESS			3
+#define METHOD_COUNT			4
+#define METHOD_SHADOW_SIZE		5
+#define METHOD_AREA_SIZE		6
+#define METHOD_COMPRESS_SIZE	7
+
+#ifndef METHOD
+#define METHOD METHOD_DEFAULT
+#endif
+
+#define PRIVILEGED_OFF		0
+#define PRIVILEGED_ON		1
+
+#ifndef PRIVILEGED
+#define PRIVILEGED PRIVILEGED_OFF
+#endif
+
+#define EXTEND_STACK (METHOD == METHOD_SHADOW || METHOD == METHOD_SHADOW_SIZE || METHOD == METHOD_AREA || METHOD == METHOD_AREA_SIZE || METHOD == METHOD_COMPRESS || METHOD == METHOD_COMPRESS_SIZE)
+#define STACK_FACTOR(use_security) ((EXTEND_STACK && use_security)?2:1)
+#define OVERWRITE_WINDOW4 (METHOD == METHOD_AREA || METHOD == METHOD_AREA_SIZE || METHOD == METHOD_SHADOW || METHOD == METHOD_SHADOW_SIZE || METHOD == METHOD_COUNT || METHOD == METHOD_COMPRESS || METHOD == METHOD_COMPRESS_SIZE)
+#define MEASURE_SHADOW_STACK_SIZE (METHOD == METHOD_SHADOW_SIZE || METHOD == METHOD_AREA_SIZE || METHOD == METHOD_COMPRESS_SIZE)
+
+#endif // SECURITY_H

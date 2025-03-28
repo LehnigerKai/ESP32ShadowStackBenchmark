@@ -1208,6 +1208,8 @@ typedef struct xSTATIC_TCB
     #if ( portUSING_MPU_WRAPPERS == 1 )
         xMPU_SETTINGS xDummy2;
     #endif
+    uint32_t uxDummyA;
+    uint32_t uxDummyB;
     StaticListItem_t xDummy3[ 2 ];
     UBaseType_t uxDummy5;
     void * pxDummy6;
@@ -1296,7 +1298,9 @@ typedef struct xSTATIC_QUEUE
         UBaseType_t uxDummy8;
         uint8_t ucDummy9;
     #endif
-    portMUX_TYPE xDummy10;
+#ifdef ESP_PLATFORM
+    portMUX_TYPE xDummy10;      //Mutex required due to SMP
+#endif // ESP_PLATFORM
 } StaticQueue_t;
 typedef StaticQueue_t StaticSemaphore_t;
 
@@ -1326,7 +1330,9 @@ typedef struct xSTATIC_EVENT_GROUP
     #if ( ( configSUPPORT_STATIC_ALLOCATION == 1 ) && ( configSUPPORT_DYNAMIC_ALLOCATION == 1 ) )
         uint8_t ucDummy4;
     #endif
-    portMUX_TYPE xDummy5;
+#ifdef ESP_PLATFORM
+    portMUX_TYPE xDummy5;       //Mutex required due to SMP
+#endif // ESP_PLATFORM
 } StaticEventGroup_t;
 
 /*
@@ -1378,7 +1384,9 @@ typedef struct xSTATIC_STREAM_BUFFER
     #if ( configUSE_TRACE_FACILITY == 1 )
         UBaseType_t uxDummy4;
     #endif
-    portMUX_TYPE xDummy5;
+#ifdef ESP_PLATFORM
+    portMUX_TYPE xDummy5;       //Mutex required due to SMP
+#endif // ESP_PLATFORM
 } StaticStreamBuffer_t;
 
 /* Message buffers are built on stream buffers. */

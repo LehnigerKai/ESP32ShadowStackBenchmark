@@ -45,6 +45,7 @@
 #include "task.h"
 #include "timers.h"
 #include "stack_macros.h"
+#include "security.h"
 
 #ifdef ESP_PLATFORM
 #define taskCRITICAL_MUX &xTaskQueueMutex
@@ -60,6 +61,20 @@
 #define _REENT_INIT_PTR                 esp_reent_init
 extern void esp_vApplicationIdleHook(void);
 #endif //ESP_PLATFORM
+
+
+// initialize global state variables for security measures
+#if STORAGE == STORAGE_MEMORY
+uint32_t state0[2] = {0, 0};
+uint32_t state1[2] = {0, 0};
+#endif
+
+//  pointer to main stack is necessary when counting the size of used stack
+#if MEASURE_SHADOW_STACK_SIZE
+uint32_t* main_stack_ptr;
+#endif
+
+
 
 /* Lint e9021, e961 and e750 are suppressed as a MISRA exception justified
  * because the MPU ports require MPU_WRAPPERS_INCLUDED_FROM_API_FILE to be defined
@@ -287,10 +302,14 @@ typedef struct tskTaskControlBlock       /* The old naming convention is used to
 {
     volatile StackType_t * pxTopOfStack; /*< Points to the location of the last item placed on the tasks stack.  THIS MUST BE THE FIRST MEMBER OF THE TCB STRUCT. */
 
+
     #if ( portUSING_MPU_WRAPPERS == 1 )
         xMPU_SETTINGS xMPUSettings; /*< The MPU settings are defined as part of the port layer.  THIS MUST BE THE SECOND MEMBER OF THE TCB STRUCT. */
     #endif
-
+	#ifdef STORAGE
+		uint32_t state0;
+		uint32_t state1;
+    #endif
     ListItem_t xStateListItem;                  /*< The list that the state list item of a task is reference from denotes the state of that task (Ready, Blocked, Suspended ). */
     ListItem_t xEventListItem;                  /*< Used to reference a task from an event list. */
     UBaseType_t uxPriority;                     /*< The priority of the task.  0 is the lowest priority. */
@@ -824,7 +843,6 @@ void taskYIELD_OTHER_CORE( BaseType_t xCoreID, UBaseType_t uxPriority )
 
 #endif /* portUSING_MPU_WRAPPERS */
 /*-----------------------------------------------------------*/
-
 #if ( configSUPPORT_DYNAMIC_ALLOCATION == 1 )
 
     BaseType_t xTaskCreatePinnedToCore( TaskFunction_t pvTaskCode,
@@ -837,6 +855,11 @@ void taskYIELD_OTHER_CORE( BaseType_t xCoreID, UBaseType_t uxPriority )
     {
         TCB_t * pxNewTCB;
         BaseType_t xReturn;
+
+
+#ifdef METHOD
+    	const int use_security = !strcmp(pcName, "main");
+#endif
 
         /* If the stack grows down then allocate the stack then the TCB so the stack
          * does not grow into the TCB.  Likewise if the stack grows up then allocate
@@ -853,7 +876,7 @@ void taskYIELD_OTHER_CORE( BaseType_t xCoreID, UBaseType_t uxPriority )
                     /* Allocate space for the stack used by the task being created.
                      * The base of the stack memory stored in the TCB so the task can
                      * be deleted later if required. */
-                pxNewTCB->pxStack = ( StackType_t * ) pvPortMallocStackMem( ( ( ( size_t ) usStackDepth ) * sizeof( StackType_t ) ) ); /*lint !e961 MISRA exception as the casts are only redundant for some ports. */
+                pxNewTCB->pxStack = ( StackType_t * ) pvPortMallocStackMem( ( ( ( size_t ) usStackDepth * STACK_FACTOR(use_security) ) * sizeof( StackType_t ) ) ); /*lint !e961 MISRA exception as the casts are only redundant for some ports. */
 
                     if( pxNewTCB->pxStack == NULL )
                     {
@@ -868,7 +891,7 @@ void taskYIELD_OTHER_CORE( BaseType_t xCoreID, UBaseType_t uxPriority )
                 StackType_t * pxStack;
 
                 /* Allocate space for the stack used by the task being created. */
-            pxStack = pvPortMallocStackMem( ( ( ( size_t ) usStackDepth ) * sizeof( StackType_t ) ) ); /*lint !e9079 All values returned by pvPortMalloc() have at least the alignment required by the MCU's stack and this allocation is the stack. */
+            pxStack = pvPortMallocStackMem( ( ( ( size_t ) usStackDepth * STACK_FACTOR(use_security)) * sizeof( StackType_t ) ) ); /*lint !e9079 All values returned by pvPortMalloc() have at least the alignment required by the MCU's stack and this allocation is the stack. */
 
                 if( pxStack != NULL )
                 {
@@ -904,7 +927,47 @@ void taskYIELD_OTHER_CORE( BaseType_t xCoreID, UBaseType_t uxPriority )
                 }
             #endif /* tskSTATIC_AND_DYNAMIC_ALLOCATION_POSSIBLE */
 
-            prvInitialiseNewTask( pvTaskCode, pcName, ( uint32_t ) usStackDepth, pvParameters, uxPriority, pvCreatedTask, pxNewTCB, NULL, xCoreID );
+                prvInitialiseNewTask( pvTaskCode, pcName, ( uint32_t ) usStackDepth* STACK_FACTOR(use_security), pvParameters, uxPriority, pvCreatedTask, pxNewTCB, NULL, xCoreID );
+#if defined(METHOD) && METHOD != METHOD_DEFAULT
+            if(use_security){
+#if METHOD == METHOD_SHADOW || METHOD == METHOD_SHADOW_SIZE
+            	/* Shadow stack offsets/addresses have a correction offset
+            	 * This offset is used since all l32e an s32e instructions operate with
+            	 * fixed negative offsets. This correction makes sure that the first value
+            	 * written to the shadow stack aligns with the bottom of the shadow stack
+            	 * to make sure its size is correctly measured.
+            	 * For parallel shadow stacks, this refers to the potential first write
+            	 * operation when no other variables are allocated on the first stack frame
+            	 * which is very unlikely.
+            	 * Still the space needs to be counted  as used, just in case...
+            	 */
+            	pxNewTCB->state0 = usStackDepth - 16; // always accessed with offset -16
+            	pxNewTCB->state1 = 0;
+#elif METHOD == METHOD_AREA || METHOD == METHOD_AREA_SIZE
+            	pxNewTCB->state0 = usStackDepth - 4;  // always accessed with offset <=-4
+            	pxNewTCB->state1 = 0;
+#elif METHOD == METHOD_COUNT
+            	pxNewTCB->state0 = 1;
+            	pxNewTCB->state1 = 0;
+#elif METHOD == METHOD_COMPRESS || METHOD == METHOD_COMPRESS_SIZE
+            	pxNewTCB->state0 = (uint32_t)pxNewTCB->pxEndOfStack;
+            	pxNewTCB->state1 = (uint32_t)pxNewTCB->pxEndOfStack - usStackDepth + 16; // because shadow stack access is done with offset -16
+#else
+#error "Undefined value for METHOD"
+#endif
+#if defined(METHOD) && MEASURE_SHADOW_STACK_SIZE
+				main_stack_ptr = (uint32_t*)pxNewTCB->pxStack;
+				int i = 20; // skip first bytes, they are used as overflow check
+				// init shadow stack with values for size counting
+				for(;i < usStackDepth;++i){
+					pxNewTCB->pxStack[i] = 0xe3;
+				}
+#endif
+            }else{
+            	pxNewTCB->state0 = 0;
+            	pxNewTCB->state1 = 0;
+            }
+#endif
             prvAddNewTaskToReadyList( pxNewTCB, pvTaskCode, xCoreID);
             xReturn = pdPASS;
         }
@@ -931,7 +994,10 @@ static void prvInitialiseNewTask( TaskFunction_t pxTaskCode,
 {
     StackType_t * pxTopOfStack;
     UBaseType_t x;
-
+#ifdef METHOD
+    pxNewTCB->state0 = 0;
+    pxNewTCB->state1 = 0;
+#endif
     #if (configNUM_CORES < 2)
     xCoreID = 0;
     #endif

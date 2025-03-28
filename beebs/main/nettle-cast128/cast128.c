@@ -799,7 +799,7 @@ void
 cast128_set_key(struct cast128_ctx *ctx, int length, const uint8_t *key)
 {
   uint32_t x0, x1, x2, x3, z0, z1, z2, z3;
-  uint32_t w;
+  uint32_t w=0;
   int full;
 
   full = (length > CAST_SMALL_KEY);
